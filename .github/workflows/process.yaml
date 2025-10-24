@@ -1,0 +1,234 @@
+name: process
+
+on:
+  workflow_run:
+    workflows: ["fetch"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  process:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      CI_COMMIT_AUTHOR: github-actions[bot]
+      CI_COMMIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      CI_REPO_NAME: data-hongkong
+
+    steps:
+    - name: Checkout self
+      uses: actions/checkout@v4
+
+    - name: Checkout remote repo
+      uses: actions/checkout@v4
+      with:
+        repository: "finmap-org/${{ env.CI_REPO_NAME }}"
+        token: ${{ secrets.REMOTE_REPO_TOKEN }}
+        path: ${{ env.CI_REPO_NAME }}
+        fetch-depth: 1
+        filter: blob:none
+
+    - name: Sync
+      run: |
+        set -euo pipefail
+        rsync --recursive --mkpath securities/hkex "${{ env.CI_REPO_NAME }}/securities/"
+
+    - name: Process raw datafiles
+      run: |
+        set -euo pipefail
+        TMP_FILE="$(mktemp)"
+        echo "TMP_FILE=$TMP_FILE" >> $GITHUB_ENV
+        DATE=$(TZ='Asia/Hong_Kong' date '+%Y/%m/%d')
+        echo "DATE=$DATE" >> $GITHUB_ENV
+
+        jq 'def to_num: try ((. // "") | gsub(","; "") | tonumber) catch 0;
+        def multiplier(u): ({"K":1000, "M":1000000, "B":1000000000}[u] // 1);
+        
+        {
+          securities: {
+            columns: ["exchange", "country", "type", "sector", "industry", "currencyId", "ticker", "nameEng", "nameEngShort", "nameOriginal", "nameOriginalShort", "priceOpen", "priceLastSale", "priceChangePct", "volume", "value", "numTrades", "marketCap", "listedFrom", "listedTill", "wikiPageIdEng", "wikiPageIdOriginal", "nestedItemsCount"],
+            data: (.stocklist // []) | map(
+              if type == "object" then
+                [
+                  "hkex",
+                  "",
+                  "",
+                  "",
+                  "",
+                  .ccy,
+                  .sym,
+                  "",
+                  .nm,
+                  "",
+                  "",
+                  (.ls | to_num) - (.nc | to_num),
+                  (.ls | to_num),
+                  (.pc | to_num),
+                  0,
+                  ((.am | to_num) * multiplier(try .am_u catch "")),
+                  0,
+                  ((.mktcap | to_num) * multiplier(try .mktcap_u catch "")),
+                  "",
+                  "",
+                  "",
+                  "",
+                  0
+                ]
+              else
+                empty
+              end
+            )
+          }
+        }' marketdata/$DATE/raw/hkex.json > $TMP_FILE
+
+    - name: Update datafiles
+      run: |
+        set -euo pipefail
+        TMP_FILE_OUT="$(mktemp)"
+        
+        find securities/hkex/eng -name "*.json" | while read -r file; do
+          ticker=$(basename "$file" .json)
+          type=$(jq -r '.data.quote.product_type // ""' "$file")
+          sector=$(jq -r '.data.quote.hsic_ind_classification // "Miscellaneous"' "$file")
+          industry=$(jq -r '.data.quote.hsic_sub_sector_classification // "Miscellaneous"' "$file")
+          name=$(jq -r '.data.quote.nm // ""' "$file")
+          nameShort=$(jq -r '.data.quote.nm_s // ""' "$file")
+          listing_date=$(jq -r '.data.quote.listing_date // ""' "$file")
+          if [ -n "$listing_date" ]; then
+            listedFrom=$(date -d "$listing_date" +%Y-%m-%d 2>/dev/null || echo "")
+          else
+            listedFrom=""
+          fi
+          jq --arg ticker "$ticker" \
+             --arg type "$type" \
+             --arg sector "$sector" \
+             --arg industry "$industry" \
+             --arg name "$name" \
+             --arg nameShort "$nameShort" \
+             --arg listedFrom "$listedFrom" \
+             '.securities.data |= map(
+               if .[6] == $ticker then
+                 .[2] = $type |
+                 .[3] = $sector |
+                 .[4] = $industry |
+                 .[7] = $name |
+                 .[8] = $nameShort |
+                 .[18] = $listedFrom
+               else . end
+             )' "$TMP_FILE" > "$TMP_FILE_OUT" && mv "$TMP_FILE_OUT" "$TMP_FILE"
+        done
+        
+        find securities/hkex/chi -name "*.json" | while read -r file; do
+          ticker=$(basename "$file" .json)
+          name=$(jq -r '.data.quote.nm // ""' "$file")
+          nameShort=$(jq -r '.data.quote.nm_s // ""' "$file")
+          jq --arg ticker "$ticker" \
+             --arg name "$name" \
+             --arg nameShort "$nameShort" \
+             '.securities.data |= map(
+               if .[6] == $ticker then
+                 .[9] = $name |
+                 .[10] = $nameShort
+               else . end
+             )' "$TMP_FILE" > "$TMP_FILE_OUT" && mv "$TMP_FILE_OUT" "$TMP_FILE"
+        done
+
+    - name: Calculate sector aggregates
+      run: |
+        TMP_FILE_OUT="$(mktemp)"
+        jq 'def current_total(g): g | map(.[17]) | add;
+        def prev_total(g): g | map(.[17] / (1 + (.[13] // 0) / 100)) | add;
+        def pct(g): if prev_total(g) == 0 then 0 else ((current_total(g) - prev_total(g)) / prev_total(g) * 100) end;
+        .securities.data += (.securities.data | group_by(.[3]) | map(
+          [
+            "",
+            "",
+            "sector",
+            "Hong Kong Exchange",
+            "",
+            "HKD",
+            .[0][3],
+            .[0][3],
+            "",
+            "",
+            "",
+            0,
+            0,
+            pct(.),
+            (map(.[14]) | add),
+            (map(.[15]) | add),
+            (map(.[16]) | add),
+            current_total(.),
+            "",
+            "",
+            "",
+            "",
+            length
+          ]
+        ))' "$TMP_FILE" > "$TMP_FILE_OUT" && mv "$TMP_FILE_OUT" "$TMP_FILE"
+
+    - name: Calculate market total
+      run: |
+        OUT_DIR="${{ env.CI_REPO_NAME }}/marketdata/$DATE"
+        mkdir -p "$OUT_DIR"
+
+        jq 'def securities: .securities.data | map(select(.[2] != "sector"));
+        def total_current: securities | map(.[17]) | add;
+        def total_prev: securities | map(.[17] / (1 + (.[13] // 0) / 100)) | add;
+        def total_pct: if total_prev == 0 then 0 else ((total_current - total_prev) / total_prev * 100) end;
+        .securities.data += [
+          [
+            "",
+            "",
+            "sector",
+            "",
+            "",
+            "HKD",
+            "Hong Kong Exchange",
+            "Hong Kong Exchange",
+            "",
+            "",
+            "",
+            0,
+            0,
+            total_pct,
+            (securities | map(.[14]) | add),
+            (securities | map(.[15]) | add),
+            (securities | map(.[16]) | add),
+            total_current,
+            "",
+            "",
+            "",
+            "",
+            (securities | length)
+          ]
+        ]' "$TMP_FILE" > "$OUT_DIR/hkex.json"
+
+    - name: Update Histogram Datafiles
+      continue-on-error: true
+      uses: finmap-org/actions/update-histogram-data@main
+      with:
+        workdir: ${{ env.CI_REPO_NAME }}
+        start_date: ${{ env.DATE }}
+        end_date: ${{ env.DATE }}
+    
+    - name: Commit and push the remote repo
+      continue-on-error: true
+      working-directory: ${{ env.CI_REPO_NAME }}
+      run: |
+        git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
+        git config --global user.email "${{ env.CI_COMMIT_AUTHOR_EMAIL }}"
+        git add --all
+        git commit -m "${{ github.workflow }}"
+        git push
+
+    - name: Commit and push self
+      continue-on-error: true
+      run: |
+        git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
+        git config --global user.email "${{ env.CI_COMMIT_AUTHOR_EMAIL }}"
+        git add --all
+        git commit -m "${{ github.workflow }}"
+        git push

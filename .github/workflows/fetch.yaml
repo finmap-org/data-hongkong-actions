@@ -1,0 +1,145 @@
+name: fetch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 1-8 * * 1-5'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    env:
+      CI_COMMIT_AUTHOR: github-actions[bot]
+      CI_COMMIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      MAIN_URL: https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities?sc_lang=en
+      USER_AGENT: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15
+
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+
+    - name: getequityfilter
+      run: |
+        set -euo pipefail
+        TOKEN=$(curl -s "${MAIN_URL}" | grep -o 'return "ev[^"]*"' | sed 's/return "//;s/"//')
+        echo "TOKEN=$TOKEN" >> $GITHUB_ENV
+        
+        get_timestamp() { date +%s%3N; }
+        CALLBACK_TIMESTAMP=$(( $(get_timestamp) - 420000 ))
+        QID=$(get_timestamp)
+        UNDERSCORE=$(( CALLBACK_TIMESTAMP + 1 ))
+        
+        RANDOM_PART="351044024557834237843"
+        CALLBACK="jQuery${RANDOM_PART}_${CALLBACK_TIMESTAMP}"
+        
+        URL="https://www1.hkex.com.hk/hkexwidget/data/getequityfilter?token=${TOKEN}&subcat=1&lang=eng&sort=5&order=0&all=1&qid=${QID}&callback=${CALLBACK}&_=${UNDERSCORE}"
+        
+        TMP="$(mktemp)"
+        STATUS=$(curl "$URL" \
+          --silent \
+          --show-error \
+          -w "%{http_code}" \
+          -o "$TMP" \
+          -H "Referer: $MAIN_URL" \
+          -H "User-Agent: $USER_AGENT" \
+          -H "Accept: */*" \
+          -H "Accept-Language: en-US,en;q=0.9" \
+          -H "Cache-Control: no-cache" \
+          -H "Pragma: no-cache")
+        
+        if [ "$STATUS" = "200" ]; then
+          # Strip JSONP wrapper
+          JSON_DATA=$(sed 's/^jQuery[0-9_]*(//; s/)$//' "$TMP") || JSON_DATA=""
+          
+          if echo "$JSON_DATA" | jq -e . >/dev/null 2>&1; then
+            DATE=$(TZ='Asia/Hong_Kong' date '+%Y/%m/%d')
+            RAW_DATA_DIR="marketdata/${DATE}/raw"
+            mkdir -p "${RAW_DATA_DIR}"
+            
+            SYMS=$(echo "$JSON_DATA" | jq -r '.data.stocklist | map(select(.ccy == "HKD")) | map(.sym) | join(" ")' 2>/dev/null)
+            echo "SYMS=$SYMS" >> $GITHUB_ENV
+
+            echo "$JSON_DATA" | jq '.data | .stocklist |= map(select(.ccy == "HKD"))' > "${RAW_DATA_DIR}/hkex.json"
+          else
+            echo "ERROR: Invalid JSON"
+            exit 1
+          fi
+        else
+          echo "ERROR: HTTP ${STATUS}"
+          exit 1
+        fi
+
+    - name: getequityquote
+      continue-on-error: true
+      run: |
+        # set -euo pipefail
+
+        if [ -z "$SYMS" ]; then
+          echo "ERROR: Failed to extract symbols"
+          exit 1
+        fi
+
+        for LANG in eng chi; do
+          for SYM in $SYMS; do
+            DATA_DIR="securities/hkex/$LANG/${SYM:0:1}"
+            
+            if [ -f "${DATA_DIR}/${SYM}.json" ]; then
+              continue
+            fi
+            
+            mkdir -p "${DATA_DIR}"
+            
+            get_timestamp() { date +%s%3N; }
+            CALLBACK_TIMESTAMP=$(( $(get_timestamp) - 420000 ))
+            QID=$(get_timestamp)
+            UNDERSCORE=$(( CALLBACK_TIMESTAMP + 1 ))
+            
+            RANDOM_PART="351044024557834237843"
+            CALLBACK="jQuery${RANDOM_PART}_${CALLBACK_TIMESTAMP}"
+            
+            URL="https://www1.hkex.com.hk/hkexwidget/data/getequityquote?token=${TOKEN}&lang=${LANG}&sym=${SYM}&qid=${QID}&callback=${CALLBACK}&_=${UNDERSCORE}"
+            
+            TMP="$(mktemp)"
+            STATUS=$(curl "$URL" \
+              --silent \
+              --show-error \
+              -w "%{http_code}" \
+              -o "$TMP" \
+              -H "Referer: $MAIN_URL" \
+              -H "User-Agent: $USER_AGENT" \
+              -H "Accept: */*" \
+              -H "Accept-Language: en-US,en;q=0.9" \
+              -H "Cache-Control: no-cache" \
+              -H "Pragma: no-cache")
+            
+            if [ "$STATUS" = "200" ]; then
+              # Strip JSONP wrapper
+              QUOTE_JSON=$(sed 's/^jQuery[0-9_]*(//; s/)$//' "$TMP") || QUOTE_JSON=""
+              
+              if echo "$QUOTE_JSON" | jq -e . >/dev/null 2>&1; then
+                echo "$QUOTE_JSON" > "${DATA_DIR}/${SYM}.json"
+              else
+                echo "ERROR: Invalid JSON for ${SYM}"
+              fi
+            else
+              echo "ERROR: HTTP ${STATUS} for ${SYM}"
+            fi
+            
+            rm -f "$TMP"
+            
+            # Optional: Sleep to avoid rate limiting
+            sleep 0.3
+          done
+        done
+
+    - name: Commit and push self
+      continue-on-error: true
+      run: |
+        git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
+        git config --global user.email "${{ env.CI_COMMIT_AUTHOR_EMAIL }}"
+        git add --all
+        git commit -m "${{ github.workflow }}"
+        git push
