@@ -1,8 +1,8 @@
 {
   "responsecode": "000",
   "responsemsg": "",
-  "lastupd": "28 Oct 2025 12:37 HKT",
-  "lastupd_l": 1761625354000,
+  "lastupd": "28 Oct 2025 13:05 HKT",
+  "lastupd_l": 1761627000000,
   "stocklist": [
     {
       "asset_subtype": "ODSH",
@@ -8817,16 +8817,16 @@
     {
       "asset_subtype": "ODSH",
       "sym": "9966",
-      "mktcap": "11.64",
-      "ls": "12.000",
+      "mktcap": "11.65",
+      "ls": "12.010",
       "am": "8.47",
       "ric": "9966.HK",
       "product_subtype": null,
       "am_u": "M",
       "yld": "",
-      "pc": "+0.59",
-      "pe": "65.54",
-      "nc": "+0.070",
+      "pc": "+0.67",
+      "pe": "65.59",
+      "nc": "+0.080",
       "ccy": "HKD",
       "nm": "ALPHAMAB-B",
       "mktcap_u": "B"
@@ -16465,6 +16465,7 @@
       "mktcap_u": "M"
     },
     {
+      "suspend": true,
       "asset_subtype": "ODSH",
       "sym": "8392",
       "mktcap": "78.00",
@@ -17368,16 +17369,16 @@
     {
       "asset_subtype": "ODSH",
       "sym": "8223",
-      "mktcap": "344.00",
-      "ls": "0.800",
+      "mktcap": "339.70",
+      "ls": "0.790",
       "am": "318.36",
       "ric": "8223.HK",
       "product_subtype": null,
       "am_u": "K",
       "yld": "",
-      "pc": "+1.27",
+      "pc": "0.00",
       "pe": "",
-      "nc": "+0.010",
+      "nc": "0.000",
       "ccy": "HKD",
       "nm": "ZYY",
       "mktcap_u": "M"
@@ -20054,16 +20055,16 @@
     {
       "asset_subtype": "ODSH",
       "sym": "439",
-      "mktcap": "861.97",
-      "ls": "1.400",
+      "mktcap": "855.81",
+      "ls": "1.390",
       "am": "140.98",
       "ric": "0439.HK",
       "product_subtype": null,
       "am_u": "K",
       "yld": "",
-      "pc": "0.00",
+      "pc": "-0.71",
       "pe": "",
-      "nc": "0.000",
+      "nc": "-0.010",
       "ccy": "HKD",
       "nm": "KUANGCHI",
       "mktcap_u": "M"
